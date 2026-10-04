@@ -19,7 +19,7 @@ See the [repository README](../README.md) for the full description.
 | Sheet | Use |
 |---|---|
 | **Start Here** | Orientation and totals |
-| **Progress Tracker** | Every video in reading order. Set *Status* and the Dashboard follows. Filter by Part, Section or Priority. Each row also carries the paper that identifies what the talk is about, with a direct link. |
+| **Progress Tracker** | Every video in reading order. Set *Status* and the Dashboard follows. Filter by Part, Section or Priority. Each row also carries the paper that identifies what the talk is about, with a direct link. Marking a row Done shades the whole row green; Watching is amber and Skipped is grey. |
 | **Dashboard** | Live completion by part and section. Formula-driven. |
 | **Core Path** | The flagged essentials — roughly 150 hours |
 | **Paired Reading** | Watch this → read that → hold this question |

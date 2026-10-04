@@ -296,17 +296,13 @@ def build(data, out):
     tr.freeze_panes = "D2"; tr.auto_filter.ref = f"A1:P{n}"
     dv = DataValidation(type="list", formula1='"Not started,Watching,Done,Skipped"', allow_blank=True)
     tr.add_data_validation(dv); dv.add(f"I2:I{n}")
-    tr.conditional_formatting.add(f"I2:I{n}",
-        CellIsRule(operator="equal", formula=['"Done"'],
-                   fill=PatternFill("solid", fgColor="C6E7CE"), font=Font(color="14532D", bold=True)))
-    tr.conditional_formatting.add(f"I2:I{n}",
-        CellIsRule(operator="equal", formula=['"Watching"'],
-                   fill=PatternFill("solid", fgColor="FDF0C8"), font=Font(color="7A5B00", bold=True)))
-    tr.conditional_formatting.add(f"I2:I{n}",
-        CellIsRule(operator="equal", formula=['"Skipped"'],
-                   fill=PatternFill("solid", fgColor="EDEDED"), font=Font(color="7A7A7A", italic=True)))
-    tr.conditional_formatting.add(f"A2:H{n}",
-        FormulaRule(formula=[f'$I2="Done"'], font=Font(color="9AA0A6", strike=True)))
+
+    # whole-row shading driven by the Status column
+    for state, bg in (("Done", "FFC9E7CF"), ("Watching", "FFFDF0C8"), ("Skipped", "FFECECEC")):
+        tr.conditional_formatting.add(
+            f"A2:P{n}",
+            FormulaRule(formula=[f'$I2="{state}"'],
+                        fill=PatternFill(bgColor=bg, fill_type="solid"), stopIfTrue=False))
 
     # =====================================================================
     # 3. DASHBOARD
@@ -358,7 +354,7 @@ def build(data, out):
         r += 1
     db.conditional_formatting.add(f"E{hdr_r+1}:E{r-1}",
         CellIsRule(operator="greaterThan", formula=["0.999"],
-                   fill=PatternFill("solid", fgColor="C6E7CE")))
+                   fill=PatternFill(bgColor="FFC6E7CE", fill_type="solid")))
 
     r += 2
     db.cell(r, 2, "BY SECTION").font = Font(bold=True, size=12, color=INK)
@@ -409,9 +405,11 @@ def build(data, out):
     cp.freeze_panes = "A5"; cp.auto_filter.ref = f"A4:G{cn}"
     dv2 = DataValidation(type="list", formula1='"Not started,Watching,Done,Skipped"', allow_blank=True)
     cp.add_data_validation(dv2); dv2.add(f"F5:F{cn}")
-    cp.conditional_formatting.add(f"F5:F{cn}",
-        CellIsRule(operator="equal", formula=['"Done"'],
-                   fill=PatternFill("solid", fgColor="C6E7CE"), font=Font(color="14532D", bold=True)))
+    for state, bg in (("Done", "FFC9E7CF"), ("Watching", "FFFDF0C8"), ("Skipped", "FFECECEC")):
+        cp.conditional_formatting.add(
+            f"A5:G{cn}",
+            FormulaRule(formula=[f'$F5="{state}"'],
+                        fill=PatternFill(bgColor=bg, fill_type="solid"), stopIfTrue=False))
     cp.sheet_view.showGridLines = False
 
     # =====================================================================
@@ -463,10 +461,10 @@ def build(data, out):
     ck.add_data_validation(dv4); dv4.add(f"D5:D{kn}")
     ck.conditional_formatting.add(f"D5:D{kn}",
         CellIsRule(operator="equal", formula=['"Can reproduce from blank paper"'],
-                   fill=PatternFill("solid", fgColor="C6E7CE"), font=Font(color="14532D", bold=True)))
+                   fill=PatternFill(bgColor="FFC6E7CE", fill_type="solid"), font=Font(color="14532D", bold=True)))
     ck.conditional_formatting.add(f"D5:D{kn}",
         CellIsRule(operator="equal", formula=['"Attempted"'],
-                   fill=PatternFill("solid", fgColor="FDF0C8")))
+                   fill=PatternFill(bgColor="FFFDF0C8", fill_type="solid")))
     ck.sheet_view.showGridLines = False
 
     # =====================================================================
