@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build the curriculum progress-tracker workbook."""
 import json, re, sys, pathlib, collections
+from urllib.parse import quote_plus
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -18,6 +19,139 @@ TITLE_FONT = Font(bold=True, size=18, color=INK)
 SUB_FONT = Font(size=11, color=MUTED)
 THIN = Side(style="thin", color=LINE)
 BORDER = Border(bottom=THIN)
+
+
+# ---------------------------------------------------------------- papers ----
+ARXIV = re.compile(r'arxiv[:\s]*((?:\d{4}\.\d{4,5})(?:v\d+)?|[a-z-]+/\d{7})', re.I)
+DOI   = re.compile(r'\b(10\.\d{4,9}/[^\s,;)\]]+)')
+STOP  = set("""the a an of and for with from to in on at by is are as its it this that
+these those how what why when new using use toward towards into over under
+part lecture talk seminar keynote introduction intro overview tutorial
+series episode session workshop course edition""".split())
+
+def tidy(cit):
+    """Close a citation that got cut mid-bracket or mid-quote."""
+    if not cit: return cit
+    cit = cit.rstrip(" ,;·")
+    for op, cl in (("(", ")"), ("[", "]")):
+        d = cit.count(op) - cit.count(cl)
+        if d > 0: cit += cl * d
+    if cit.count('"') % 2: cit += '"'
+    return cit
+
+def paper_link(cit):
+    if not cit: return ""
+    m = ARXIV.search(cit)
+    if m: return f"https://arxiv.org/abs/{m.group(1)}"
+    m = DOI.search(cit)
+    if m: return f"https://doi.org/{m.group(1).rstrip('.')}"
+    q = re.sub(r'[^\w\s.:&-]', ' ', cit)
+    q = re.sub(r'\s+', ' ', q).strip()[:220]
+    return "https://scholar.google.com/scholar?q=" + quote_plus(q) if q else ""
+
+
+# method / software names: internal capitals, or all-caps runs, or digit-suffixed
+METHOD = re.compile(r'\b(?:[A-Za-z]+[A-Z][A-Za-z0-9]*[0-9]*|[A-Z]{3,}[0-9]*)\b')
+NOT_METHOD = set("""THE AND FOR WITH FROM INTO HOW WHY WHAT NEW USING USE PART
+LECTURE TALK SEMINAR KEYNOTE TUTORIAL WORKSHOP COURSE SESSION EPISODE SERIES
+INTRO INTRODUCTION OVERVIEW PHD MIT ETH UCL NYU UCSF UCSD CMU JHU EPFL KTH UIUC
+USA NIH NSF DOE ACS RNA DNA GPU CPU TPU PDB NMR SAXS CASP ISMB NeurIPS ICML ICLR
+CVPR ICCV ECCV SIGGRAPH USENIX OSDI ASPLOS ISCA JMLR CACM PNAS JACS JCTC JCP NAR
+QA AI ML HPC MD IDP IDR PPI SOTA FAQ TBD PDF URL AMA IRL DSL API SDK CEO CTO VP
+""".split())
+
+def methods_in(text):
+    out = set()
+    for m in METHOD.findall(text or ""):
+        u = m.upper()
+        if len(m) < 3 or u in NOT_METHOD: continue
+        out.add(u)
+    return out
+
+def toks(t):
+    t = re.sub(r'[^a-z0-9 ]', ' ', (t or '').lower())
+    return {w for w in t.split() if len(w) > 3 and w not in STOP}
+
+def attach_papers(rows, data):
+    """Give each video the paper that identifies what it is about.
+
+    Priority: a paper stated with the talk, then a citation that names the same
+    method as the title, then the curriculum's own watch-then-read pairing, then
+    the section's reading. Course lectures with no reading list stay blank --
+    a linear-algebra lecture has no affiliated paper and should not pretend to.
+    """
+    pairs = collections.defaultdict(list)
+    for pr in data["paired"]:
+        if pr["read"] and pr["read"] not in ("-", "\u2014", ""):
+            pairs[part_key(pr["part"])].append((toks(pr["watch"]), pr["read"]))
+    secpap = collections.defaultdict(list)
+    for pp in data["papers"]:
+        secpap[pp["section"]].append(pp["citation"])
+
+    # a subsection with no reading list of its own inherits the nearest
+    # preceding section in the same part that has one
+    order, seen = [], set()
+    for v in rows:
+        key = (part_key(v["part"]), v["section"])
+        if key not in seen:
+            seen.add(key); order.append(key)
+    inherit, last = {}, {}
+    for pk, sec in order:
+        if secpap.get(sec):
+            last[pk] = sec
+        elif pk in last:
+            inherit[(pk, sec)] = last[pk]
+
+    stats = collections.Counter()
+    for v in rows:
+        pk = part_key(v["part"])
+        cits = secpap.get(v["section"], [])
+        inherited = ""
+        if not cits:
+            parent = inherit.get((pk, v["section"]))
+            if parent:
+                cits, inherited = secpap[parent], parent
+        paper, src = "", ""
+
+        if v.get("paper"):                                   # 1. stated with the talk
+            paper, src = v["paper"], "stated with the talk"
+            stats["stated with the talk"] += 1
+        else:
+            vm = methods_in(v["title"]) | methods_in(v["speaker"])
+            hit = next(((c, sorted(vm & methods_in(c))[0])
+                        for c in cits if vm & methods_in(c)), None)
+            if hit:                                          # 2. names the same method
+                paper, src = hit[0], f"names {hit[1]}"
+                stats["names the method"] += 1
+            else:                                            # 3. watch-then-read pairing
+                best, score = None, 0.0
+                vt = toks(v["title"]) | toks(v["speaker"])
+                for wt, read in pairs.get(part_key(v["part"]), []):
+                    if len(wt) < 2 or len(vt) < 2: continue
+                    ov = len(vt & wt)
+                    if ov < 3: continue
+                    sc = ov / max(len(vt), len(wt))
+                    if sc > score: best, score = read, sc
+                if best and score >= 0.55:
+                    paper, src = best, "paired reading"
+                    stats["paired reading"] += 1
+                elif cits:                                   # 4. the section's reading
+                    paper = " \u00b7 ".join(cits[:2])
+                    if inherited:
+                        src = f"reading for {inherited[:40]}"
+                        stats["inherited reading"] += 1
+                    else:
+                        src = ("section reading" if len(cits) <= 2
+                               else f"section reading (2 of {len(cits)})")
+                        stats["section reading"] += 1
+                else:                                        # 5. nothing to pair
+                    src = "course lecture - no single paper"
+                    stats["no paper"] += 1
+
+        v["paper"] = tidy(paper)
+        v["paper_src"] = src
+        v["paper_url"] = paper_link(v["paper"])
+    return stats
 
 def part_key(p):
     m = re.match(r'(Part [IVX]+)', p or "")
@@ -56,6 +190,7 @@ def build(data, out):
             if not first[k]["speaker"] and v["speaker"]: first[k]["speaker"] = v["speaker"]
             if v["star"]: first[k]["star"] = True
     rows = list(first.values())
+    pstats = attach_papers(rows, data)
 
     # =====================================================================
     # 1. START HERE
@@ -82,6 +217,12 @@ def build(data, out):
         ("1 · Progress Tracker",
          "The main sheet. Every video in reading order. Set Status to Watching or Done and the "
          "Dashboard updates itself. Filter by Part, Section or Priority to carve out a study block."),
+        ("   · the paper columns",
+         "Paired paper is the citation to read alongside the talk; Paper is a link straight to it "
+         "(arXiv or DOI where the citation carries one, otherwise a Scholar search). How paired says "
+         "where the pairing came from: stated with the talk is the strongest, paired reading comes "
+         "from the curriculum's own watch-then-read tables, and section reading means it is the "
+         "reading for that section rather than for that one talk."),
         ("2 · Core Path",
          "If you do nothing else, do this. Roughly 150 hours that take you from running tools to "
          "understanding them."),
@@ -122,7 +263,8 @@ def build(data, out):
     # =====================================================================
     tr = wb.create_sheet("Progress Tracker")
     hdr = ["#", "Part", "Section", "Title", "Speaker / host", "Duration", "Hours",
-           "Priority", "Status", "Date done", "Notes", "Watch", "Also appears in"]
+           "Priority", "Status", "Date done", "Notes", "Watch",
+           "Paired paper", "Paper", "How paired", "Also appears in"]
     tr.append(hdr); style_header(tr, 1, len(hdr))
     for i, v in enumerate(rows, 1):
         pk = part_key(v["part"])
@@ -130,22 +272,28 @@ def build(data, out):
                    fmt_dur(v["secs"]), round((v["secs"] or 0)/3600, 2),
                    "★" if v["star"] else "", "Not started", None, "",
                    f'https://www.youtube.com/watch?v={v["vid"]}',
+                   v.get("paper", ""), v.get("paper_url", ""), v.get("paper_src", ""),
                    "; ".join(sorted(set(extra[v["vid"]]))[:4])])
         rr = i + 1
         fill = PatternFill("solid", fgColor=PART_COLOR.get(pk, "FFFFFF"))
         for c in range(1, len(hdr)+1):
             cell = tr.cell(rr, c); cell.border = BORDER
-            cell.alignment = Alignment(vertical="top", wrap_text=(c in (3, 4, 5, 11, 13)))
+            cell.alignment = Alignment(vertical="top", wrap_text=(c in (3, 4, 5, 11, 13, 16)))
             if c in (1, 2, 3): cell.fill = fill
         lk = tr.cell(rr, 12)
         lk.hyperlink = lk.value; lk.value = "▶ watch"
         lk.font = Font(color="1A56DB", underline="single")
+        pl = tr.cell(rr, 14)
+        if pl.value:
+            pl.hyperlink = pl.value; pl.value = "read ↗"
+            pl.font = Font(color="1A56DB", underline="single")
         tr.cell(rr, 8).alignment = Alignment(horizontal="center")
         tr.cell(rr, 10).number_format = "yyyy-mm-dd"
     n = len(rows) + 1
     widths(tr, {"A": 6, "B": 22, "C": 30, "D": 62, "E": 30, "F": 10, "G": 8,
-                "H": 9, "I": 13, "J": 12, "K": 34, "L": 11, "M": 28})
-    tr.freeze_panes = "D2"; tr.auto_filter.ref = f"A1:M{n}"
+                "H": 9, "I": 13, "J": 12, "K": 30, "L": 11,
+                "M": 70, "N": 10, "O": 22, "P": 26})
+    tr.freeze_panes = "D2"; tr.auto_filter.ref = f"A1:P{n}"
     dv = DataValidation(type="list", formula1='"Not started,Watching,Done,Skipped"', allow_blank=True)
     tr.add_data_validation(dv); dv.add(f"I2:I{n}")
     tr.conditional_formatting.add(f"I2:I{n}",
@@ -164,7 +312,7 @@ def build(data, out):
     # 3. DASHBOARD
     # =====================================================================
     db = wb.create_sheet("Dashboard")
-    widths(db, {"A": 3, "B": 34, "C": 12, "D": 12, "E": 12, "F": 12, "G": 12, "H": 14})
+    widths(db, {"A": 3, "B": 40, "C": 12, "D": 12, "E": 12, "F": 12, "G": 12, "H": 14})
     db["B2"] = "Progress"; db["B2"].font = TITLE_FONT
     db["B3"] = "Driven by the Status column on Progress Tracker. Nothing here needs editing."
     db["B3"].font = SUB_FONT
@@ -191,14 +339,21 @@ def build(data, out):
         db.cell(r, 2+j, h)
     style_header(db, r, 7, height=22)
     hdr_r = r; r += 1
-    for pk in ["Part I", "Part II", "Part III", "Part IV", "Part V", "Part VI"]:
-        db.cell(r, 2, pk).fill = PatternFill("solid", fgColor=PART_COLOR[pk])
+    # exact part names -- a "Part I*" wildcard would also swallow II, III and IV
+    part_names = []
+    for v in rows:
+        if v["part"] not in part_names: part_names.append(v["part"])
+    part_names.sort(key=lambda x: ["I","II","III","IV","V","VI"].index(
+        re.match(r'Part ([IVX]+)', x).group(1)) if re.match(r'Part ([IVX]+)', x) else 99)
+    for pk in part_names:
+        db.cell(r, 2, pk).fill = PatternFill("solid", fgColor=PART_COLOR.get(part_key(pk), "FFFFFF"))
         db.cell(r, 2).font = Font(bold=True, size=10)
-        db.cell(r, 3, f'=COUNTIF({T}!$B$2:$B${n},$B{r}&"*")')
-        db.cell(r, 4, f'=COUNTIFS({T}!$B$2:$B${n},$B{r}&"*",{T}!$I$2:$I${n},"Done")')
+        db.cell(r, 2).alignment = Alignment(wrap_text=True, vertical="center")
+        db.cell(r, 3, f'=COUNTIF({T}!$B$2:$B${n},$B{r})')
+        db.cell(r, 4, f'=COUNTIFS({T}!$B$2:$B${n},$B{r},{T}!$I$2:$I${n},"Done")')
         db.cell(r, 5, f'=IFERROR(D{r}/C{r},0)').number_format = "0.0%"
-        db.cell(r, 6, f'=ROUND(SUMIF({T}!$B$2:$B${n},$B{r}&"*",{T}!$G$2:$G${n}),0)')
-        db.cell(r, 7, f'=ROUND(SUMIFS({T}!$G$2:$G${n},{T}!$B$2:$B${n},$B{r}&"*",{T}!$I$2:$I${n},"Done"),1)')
+        db.cell(r, 6, f'=ROUND(SUMIF({T}!$B$2:$B${n},$B{r},{T}!$G$2:$G${n}),0)')
+        db.cell(r, 7, f'=ROUND(SUMIFS({T}!$G$2:$G${n},{T}!$B$2:$B${n},$B{r},{T}!$I$2:$I${n},"Done"),1)')
         for c in range(2, 8): db.cell(r, c).border = BORDER
         r += 1
     db.conditional_formatting.add(f"E{hdr_r+1}:E{r-1}",
@@ -383,10 +538,19 @@ def build(data, out):
     sx.freeze_panes = "A5"; sx.auto_filter.ref = f"A4:E{len(sec_order)+4}"
     sx.sheet_view.showGridLines = False
 
+    for ws in wb:
+        for row in ws.iter_rows():
+            for cell in row:
+                f = cell.font
+                cell.font = Font(name="Arial", size=f.size or 10, bold=f.bold,
+                                 italic=f.italic, color=f.color, underline=f.underline,
+                                 strike=f.strike)
+    wb.calculation.fullCalcOnLoad = True
     wb.save(out)
-    return len(rows), total_secs, len(sec_order), len(core)
+    return len(rows), total_secs, len(sec_order), len(core), pstats
 
 if __name__ == "__main__":
     d = json.loads(pathlib.Path(sys.argv[1]).read_text())
-    nv, ts, ns, nc = build(d, sys.argv[2])
+    nv, ts, ns, nc, st = build(d, sys.argv[2])
     print(f"workbook written: {nv:,} videos | {ts/3600:,.0f} h | {ns} sections | core path {nc}")
+    print('  papers -> ' + ' | '.join(f'{k}: {v:,}' for k, v in st.most_common()))

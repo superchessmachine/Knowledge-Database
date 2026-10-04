@@ -35,6 +35,18 @@ def usable(t):
     if re.fullmatch(r'[\d:\s.\-–—|]+', t): return False
     return True
 
+
+PAPER_INLINE = re.compile(
+    r'(?:\*\*|\*)?\s*(?:PAPERS?|Papers?)\s*:?\s*(?:\*\*|\*)?\s*(.+?)$', re.I)
+
+def inline_paper(text):
+    """Pull a 'Paper: ...' citation out of the same line/paragraph as a video."""
+    m = re.search(r'(?:\*\*|\*)?\s*PAPERS?\s*:(?:\*\*|\*)?\s*(.+)', text, re.I)
+    if not m: return ""
+    cit = clean(m.group(1))
+    cit = re.split(r'\s{2,}|\s\|\s', cit)[0]
+    return cit[:300] if len(cit) > 10 else ""
+
 def parse(path):
     lines = pathlib.Path(path).read_text().split("\n")
     part = section = sec_title = ""
@@ -127,8 +139,10 @@ def parse(path):
                             speaker = c; break
                     if not speaker and others: speaker = others[0]
                     star = '★' in line or '**' in line
+                    tail = line[vm.end():] if vm.end() < len(line) else ""
                     yield_rec = {"part": part, "section": section, "title": title[:300],
-                                 "speaker": speaker[:200], "secs": d, "vid": vid, "star": star}
+                                 "speaker": speaker[:200], "secs": d, "vid": vid, "star": star,
+                                 "paper": inline_paper(line)}
                     vids.append(yield_rec)
                 i += 1; continue
             else:
@@ -150,8 +164,11 @@ def parse(path):
                         parts = [x.strip() for x in re.split(r'[·|]', tail) if usable(x.strip())]
                         title = parts[-1][-140:] if parts else "(see curriculum section)"
                     win = blob[max(0, vm.start()-160):vm.start()+60]
+                    after = blob[vm.end():vm.end()+420]
                     vids.append({"part": part, "section": section, "title": title[:300],
-                                 "speaker": "", "secs": dur_secs(win), "vid": vid, "star": '**' in before[-200:]})
+                                 "speaker": "", "secs": dur_secs(win), "vid": vid,
+                                 "star": '**' in before[-200:],
+                                 "paper": inline_paper(after)})
                 i = j; continue
         i += 1
     return vids, papers, paired, checkpoints, capstones
